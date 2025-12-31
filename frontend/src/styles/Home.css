@@ -16,6 +16,65 @@ h1 {
   text-align: center;
 }
 
+.main-actions {
+  margin: 40px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.begin-training-btn {
+  padding: 20px 50px;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: white;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+}
+
+.begin-training-btn:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+}
+
+.begin-training-btn:active {
+  transform: translateY(-1px);
+}
+
+.divider {
+  text-align: center;
+  margin: 30px 0;
+  position: relative;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 40%;
+  height: 1px;
+  background: #e0e0e0;
+}
+
+.divider::before {
+  left: 0;
+}
+
+.divider::after {
+  right: 0;
+}
+
+.divider span {
+  color: #999;
+  background: white;
+  padding: 0 15px;
+  position: relative;
+}
+
 .subtitle {
   color: #666;
   text-align: center;
