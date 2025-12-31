@@ -38,3 +38,11 @@ build/
 *.log
 logs/
 
+# Data files (large datasets)
+data/raw/
+data/processed/*.h5
+data/processed/*.npz
+*.h5
+*.npz
+# Keep the data directory structure but ignore large files
+!data/README.md
