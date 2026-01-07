@@ -6,16 +6,30 @@ import '../../styles/TrainingView.css'
 const API_BASE_URL = 'http://localhost:8000'
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000
+  timeout: 10000  // 10 seconds for regular requests
 })
 
-function TrainingView({ onBack }) {
+// Separate axios instance for training with longer timeout (5 minutes)
+const trainingApi = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: 300000  // 5 minutes for training requests
+})
+
+function TrainingView({ onBack, onTrainingComplete, datasetType = "cats_dogs" }) {
   const [images, setImages] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [numImages, setNumImages] = useState(null)
   const [numImagesInput, setNumImagesInput] = useState('')
+  const [learningRate, setLearningRate] = useState(0.005)
+  const [numIterations, setNumIterations] = useState(2000)
+  const [numTest, setNumTest] = useState(1000)
+  const [numTrainingCats, setNumTrainingCats] = useState(null)
+  const [numTrainingDogs, setNumTrainingDogs] = useState(null)
+  const [numTestCats, setNumTestCats] = useState(null)
+  const [numTestDogs, setNumTestDogs] = useState(null)
   const [trainingStarted, setTrainingStarted] = useState(false)
+  const [trainingInProgress, setTrainingInProgress] = useState(false)
   const [imagePreviews, setImagePreviews] = useState({})
   const [currentPage, setCurrentPage] = useState(0)
   const imagesPerPage = 10
@@ -45,10 +59,16 @@ function TrainingView({ onBack }) {
         let imageList = response.data.images || []
         const totalCount = response.data.total_count || 0
         
-        // If we have total_count but no images array, generate indices up to 11,000
+        // If we have total_count but no images array, generate indices
         if (totalCount > 0 && imageList.length === 0) {
-          const maxToGenerate = Math.min(11000, totalCount)
+          const maxToGenerate = datasetType === "brain_tumor" ? totalCount : Math.min(11000, totalCount)
+          setMaxImages(maxToGenerate)
           imageList = Array.from({ length: maxToGenerate }, (_, i) => i)
+        } else if (totalCount > 0) {
+          const maxToGenerate = datasetType === "brain_tumor" ? totalCount : Math.min(11000, totalCount)
+          setMaxImages(maxToGenerate)
+        } else {
+          setMaxImages(0)
         }
         
         setImages(imageList)
@@ -90,7 +110,7 @@ function TrainingView({ onBack }) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [datasetType])
 
   // loadImages function removed - now handled directly in useEffect
 
@@ -103,7 +123,8 @@ function TrainingView({ onBack }) {
         const imageIdStr = String(imageId)
         console.log(`Loading image ${imageIdStr}...`)
         const startTime = Date.now()
-        const response = await api.get(`/api/images/preview/${imageIdStr}?size=64`, {
+        const response = await api.get(`/api/images/preview/${imageIdStr}`, {
+          params: { size: 64, dataset_type: datasetType },
           timeout: 30000 // 30 second timeout for testing
         })
         const endTime = Date.now()
@@ -144,10 +165,10 @@ function TrainingView({ onBack }) {
     }
     
     const value = parseInt(numImagesInput)
-    // Clamp to valid range (2000-11000) only on blur
-    if (value < 2000) {
-      setNumImages(2000)
-      setNumImagesInput('2000')
+    // Clamp to valid range (1-11000) only on blur
+    if (value < 1) {
+      setNumImages(1)
+      setNumImagesInput('1')
     } else if (value > 11000) {
       setNumImages(11000)
       setNumImagesInput('11000')
@@ -161,26 +182,99 @@ function TrainingView({ onBack }) {
     // Get the actual numeric value
     const actualNumImages = typeof numImages === 'number' ? numImages : (numImagesInput ? parseInt(numImagesInput) : null)
     
-    if (!actualNumImages || actualNumImages < 2000 || actualNumImages > 11000) {
-      setError('Number of images must be between 2,000 and 11,000')
+    if (!actualNumImages || actualNumImages < 1 || actualNumImages > maxImages) {
+      setError(`Number of images must be between 1 and ${maxImages}`)
       return
     }
 
-    if (actualNumImages > images.length) {
-      setError(`Not enough images. Available: ${images.length}, Requested: ${actualNumImages}`)
+    if (actualNumImages + numTest > images.length) {
+      setError(`Not enough images. Available: ${images.length}, Need: ${actualNumImages} (training) + ${numTest} (testing) = ${actualNumImages + numTest}`)
       return
+    }
+
+    if (learningRate <= 0 || learningRate > 1) {
+      setError('Learning rate must be between 0 and 1')
+      return
+    }
+
+    if (numIterations < 100 || numIterations > 10000) {
+      setError('Number of iterations must be between 100 and 10,000')
+      return
+    }
+
+    if (numTest < 100 || numTest > 5000) {
+      setError('Number of test images must be between 100 and 5,000')
+      return
+    }
+
+    // Validate cat/dog counts if provided
+    if (numTrainingCats !== null || numTrainingDogs !== null) {
+      const trainingCats = numTrainingCats || 0
+      const trainingDogs = numTrainingDogs || 0
+      if (trainingCats + trainingDogs !== actualNumImages) {
+        setError(`Training cats (${trainingCats}) + dogs (${trainingDogs}) must equal training images (${actualNumImages})`)
+        return
+      }
+      if (trainingCats < 0 || trainingDogs < 0) {
+        setError('Cat and dog counts cannot be negative')
+        return
+      }
+    }
+
+    if (numTestCats !== null || numTestDogs !== null) {
+      const testCats = numTestCats || 0
+      const testDogs = numTestDogs || 0
+      if (testCats + testDogs !== numTest) {
+        setError(`Test cats (${testCats}) + dogs (${testDogs}) must equal test images (${numTest})`)
+        return
+      }
+      if (testCats < 0 || testDogs < 0) {
+        setError('Cat and dog counts cannot be negative')
+        return
+      }
     }
 
     try {
       setError(null)
-      const response = await api.post('/api/training/start', {
-        num_images: actualNumImages
+      setTrainingInProgress(true)  // Show training progress indicator
+      setTrainingStarted(false)
+      const response = await trainingApi.post('/api/training/start', {
+        num_images: actualNumImages,
+        learning_rate: learningRate,
+        num_iterations: numIterations,
+        num_test: numTest,
+        dataset_type: datasetType,
+        num_training_cats: datasetType === "cats_dogs" ? numTrainingCats : null,
+        num_training_dogs: datasetType === "cats_dogs" ? numTrainingDogs : null,
+        num_training_no_tumor: datasetType === "brain_tumor" ? numTrainingCats : null,
+        num_training_tumor: datasetType === "brain_tumor" ? numTrainingDogs : null,
+        num_test_cats: datasetType === "cats_dogs" ? numTestCats : null,
+        num_test_dogs: datasetType === "cats_dogs" ? numTestDogs : null,
+        num_test_no_tumor: datasetType === "brain_tumor" ? numTestCats : null,
+        num_test_tumor: datasetType === "brain_tumor" ? numTestDogs : null,
       })
-      setTrainingStarted(true)
-      console.log('Training started:', response.data)
+      setTrainingInProgress(false)
+      console.log('Training completed:', response.data)
+      
+      // Log debug information if available
+      if (response.data.debug_logs) {
+        console.log('\n=== BACKEND DEBUG LOGS ===')
+        response.data.debug_logs.forEach(log => console.log(log))
+        console.log('===========================\n')
+      }
+
+      // Navigate to results page
+      if (onTrainingComplete) {
+        onTrainingComplete(response.data)
+      } else {
+        setTrainingStarted(true)
+      }
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to start training')
+      setTrainingInProgress(false)
+      const errorMessage = err.response?.data?.detail || err.response?.data?.error || err.message || 'Failed to start training'
+      setError(errorMessage)
       console.error('Error starting training:', err)
+      console.error('Error response:', err.response?.data)
     }
   }
 
@@ -236,6 +330,30 @@ function TrainingView({ onBack }) {
     )
   }
 
+  // Show training in progress overlay
+  if (trainingInProgress) {
+    return (
+      <div className="training-view">
+        <div className="container">
+          <div className="training-progress">
+            <div className="spinner"></div>
+            <h2>Training Model...</h2>
+            <p>This may take several minutes. Please wait...</p>
+            <p className="training-info">
+              Training with {actualNumImages} images for {numIterations} iterations
+            </p>
+            <p className="training-info" style={{fontSize: '0.9rem', marginTop: '10px'}}>
+              Learning rate: {learningRate} | Test images: {numTest}
+            </p>
+            <p className="training-info" style={{fontSize: '0.9rem', marginTop: '10px'}}>
+              The page will update automatically when training completes.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (error && images.length === 0 && !loading) {
     return (
       <div className="training-view">
@@ -281,22 +399,183 @@ function TrainingView({ onBack }) {
               <input
                 id="num-images"
                 type="number"
-                min="2000"
-                max="11000"
+                min="1"
+                max={maxImages}
                 value={numImagesInput}
                 onChange={handleNumImagesChange}
                 onBlur={handleNumImagesBlur}
                 disabled={trainingStarted}
                 className="num-input"
-                placeholder="Enter 2000-11000"
+                placeholder={`Enter 1-${maxImages}`}
               />
               <span className="input-info">
                 (Available: {images.length} images)
               </span>
             </div>
             <div className="range-info">
-              <span>Min: 2,000</span>
-              <span>Max: 11,000 (1,000 reserved for testing)</span>
+              <span>Min: 1</span>
+              <span>Max: {maxImages.toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="learning-rate">
+              Learning Rate:
+            </label>
+            <div className="input-with-info">
+              <input
+                id="learning-rate"
+                type="number"
+                min="0.0001"
+                max="1"
+                step="0.0001"
+                value={learningRate}
+                onChange={(e) => setLearningRate(parseFloat(e.target.value) || 0.005)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="0.005"
+              />
+              <span className="input-info">
+                (Recommended: 0.001 - 0.01)
+              </span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-iterations">
+              Number of Iterations:
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-iterations"
+                type="number"
+                min="100"
+                max="10000"
+                step="100"
+                value={numIterations}
+                onChange={(e) => setNumIterations(parseInt(e.target.value) || 2000)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="2000"
+              />
+              <span className="input-info">
+                (More iterations = longer training, better results)
+              </span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-test">
+              Number of Test Images:
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-test"
+                type="number"
+                min="100"
+                max="5000"
+                step="100"
+                value={numTest}
+                onChange={(e) => setNumTest(parseInt(e.target.value) || 1000)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="1000"
+              />
+              <span className="input-info">
+                (Available: {images.length} total)
+              </span>
+            </div>
+            <div className="range-info">
+              <span>Min: 100</span>
+              <span>Max: 5,000</span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-training-cats">
+              Number of Training {datasetType === "brain_tumor" ? "No Tumor" : "Cats"} (Optional):
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-training-cats"
+                type="number"
+                min="0"
+                max={maxImages}
+                value={numTrainingCats === null ? '' : numTrainingCats}
+                onChange={(e) => setNumTrainingCats(e.target.value === '' ? null : parseInt(e.target.value) || 0)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="Auto (balanced)"
+              />
+              <span className="input-info">
+                (Leave empty for balanced split)
+              </span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-training-dogs">
+              Number of Training {datasetType === "brain_tumor" ? "Tumor" : "Dogs"} (Optional):
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-training-dogs"
+                type="number"
+                min="0"
+                max={maxImages}
+                value={numTrainingDogs === null ? '' : numTrainingDogs}
+                onChange={(e) => setNumTrainingDogs(e.target.value === '' ? null : parseInt(e.target.value) || 0)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="Auto (balanced)"
+              />
+              <span className="input-info">
+                (Leave empty for balanced split)
+              </span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-test-cats">
+              Number of Test {datasetType === "brain_tumor" ? "No Tumor" : "Cats"} (Optional):
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-test-cats"
+                type="number"
+                min="0"
+                max="5000"
+                value={numTestCats === null ? '' : numTestCats}
+                onChange={(e) => setNumTestCats(e.target.value === '' ? null : parseInt(e.target.value) || 0)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="Auto (balanced)"
+              />
+              <span className="input-info">
+                (Leave empty for balanced split)
+              </span>
+            </div>
+          </div>
+
+          <div className="input-group">
+            <label htmlFor="num-test-dogs">
+              Number of Test {datasetType === "brain_tumor" ? "Tumor" : "Dogs"} (Optional):
+            </label>
+            <div className="input-with-info">
+              <input
+                id="num-test-dogs"
+                type="number"
+                min="0"
+                max="5000"
+                value={numTestDogs === null ? '' : numTestDogs}
+                onChange={(e) => setNumTestDogs(e.target.value === '' ? null : parseInt(e.target.value) || 0)}
+                disabled={trainingStarted || trainingInProgress}
+                className="num-input"
+                placeholder="Auto (balanced)"
+              />
+              <span className="input-info">
+                (Leave empty for balanced split)
+              </span>
             </div>
           </div>
 
@@ -317,7 +596,19 @@ function TrainingView({ onBack }) {
               <button 
                 onClick={handleStartTraining}
                 className="start-training-btn"
-                disabled={images.length === 0 || !actualNumImages || actualNumImages < 2000 || actualNumImages > 11000 || actualNumImages > images.length}
+                disabled={
+                  images.length === 0 || 
+                  !actualNumImages || 
+                  actualNumImages < 1 || 
+                  actualNumImages > maxImages || 
+                  actualNumImages + numTest > images.length ||
+                  learningRate <= 0 ||
+                  learningRate > 1 ||
+                  numIterations < 100 ||
+                  numIterations > 10000 ||
+                  numTest < 100 ||
+                  numTest > 5000
+                }
               >
                 Begin Training!
               </button>
@@ -334,7 +625,7 @@ function TrainingView({ onBack }) {
               {validNumImages > 0 ? (
                 `Preview: ${startIndex + 1}-${endIndex} of ${Math.min(validNumImages, images.length)} Images`
               ) : (
-                'Enter a number between 2,000 and 11,000 to preview images'
+                'Enter a number between 1 and 11,000 to preview images'
               )}
             </h2>
             {validNumImages > 0 && (
