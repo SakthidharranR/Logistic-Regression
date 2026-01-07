@@ -10,6 +10,7 @@ ENV/
 .venv
 pip-log.txt
 pip-delete-this-directory.txt
+*.pyc
 
 # Node
 node_modules/
@@ -38,10 +39,6 @@ build/
 *.log
 logs/
 
-<<<<<<< HEAD
-__pycache__/
-*.pyc
-=======
 # Data files (large datasets)
 data/raw/
 data/processed/*.h5
@@ -50,4 +47,3 @@ data/processed/*.npz
 *.npz
 # Keep the data directory structure but ignore large files
 !data/README.md
->>>>>>> refactor/frontend-structure
